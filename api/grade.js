@@ -14,6 +14,29 @@ export default async function handler(req, res) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) return res.status(500).json({ error: 'No API key' });
 
+  // ── 1단계: 직접 비교 (AI 없이) ──
+  function norm(s) {
+    return s.trim()
+      .replace(/\s+/g, '')
+      .replace(/하다$|한$|하는$|된$|되다$|인$|적인$|스러운$|적$|함$|임$/, '');
+  }
+
+  const correctParts = correctKo.split(/[,，、\/]/).map(s => s.trim()).filter(Boolean);
+  const studentParts = studentAnswer.split(/[,，、\/]/).map(s => s.trim()).filter(Boolean);
+
+  const directMatch = studentParts.some(sp =>
+    correctParts.some(cp =>
+      norm(sp) === norm(cp) ||
+      norm(cp).includes(norm(sp)) ||
+      norm(sp).includes(norm(cp))
+    )
+  );
+
+  if (directMatch) {
+    return res.status(200).json({ correct: true, reason: '정답의 의미를 포함하고 있습니다!' });
+  }
+
+  // ── 2단계: AI 채점 ──
   const prompt = `You are grading a Korean vocabulary test.
 
 English word: ${word}
@@ -34,7 +57,7 @@ or
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
       {
         method: 'POST',
         headers: {
@@ -54,10 +77,17 @@ or
       return res.status(500).json({ error: 'No response', raw: JSON.stringify(data) });
     }
 
-    let text = data.candidates[0].content.parts[0].text.trim();
+    // thinking 모드 대비: parts 중 text가 있는 것만 찾기
+    const parts = data.candidates[0].content.parts;
+    const textPart = parts.find(p => p.text && p.text.trim().length > 0);
+    if (!textPart) {
+      return res.status(500).json({ error: 'No text in response' });
+    }
+
+    let text = textPart.text.trim();
     text = text.replace(/```json/g, '').replace(/```/g, '').trim();
 
-    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    const jsonMatch = text.match(/\{[^{}]*"correct"[^{}]*\}/);
     if (jsonMatch) {
       return res.status(200).json(JSON.parse(jsonMatch[0]));
     }
